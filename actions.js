@@ -1,4 +1,11 @@
-import { SPEED_CHOICES, IRIS_CHOICES, SHUTTER_CHOICES, PRESET_CHOICES } from './choices.js'
+import {
+	COLOR_TEMP_CHOICES,
+	DIRECTION_CHOICES,
+	IRIS_CHOICES,
+	PRESET_CHOICES,
+	SHUTTER_CHOICES,
+	SPEED_CHOICES,
+} from './choices.js'
 
 function getPtSpeed(instance) {
 	var panSpeed = String.fromCharCode(parseInt(instance.ptSpeed, 16) & 0xff)
@@ -431,6 +438,7 @@ export function getActions(instance) {
 						{ id: 'outdoor', label: 'Outdoor' },
 						{ id: 'onepush', label: 'One Push' },
 						{ id: 'manual', label: 'Manual' },
+						{ id: 'temperature', label: 'Color Temperature' },
 					],
 				},
 			],
@@ -451,6 +459,8 @@ export function getActions(instance) {
 					case 'manual':
 						var cmd = '\x81\x01\x04\x35\x05\xFF'
 						break
+					case 'temperature':
+						var cmd = '\x81\x01\x04\x35\x20\xFF'
 				}
 				instance.sendVISCACommand(cmd)
 			},
@@ -489,6 +499,38 @@ export function getActions(instance) {
 						var cmd = '\x81\x01\x04\xA9\x02\xFF'
 						break
 				}
+				instance.sendVISCACommand(cmd)
+			},
+		},
+		wbColorTempAdjust: {
+			name: 'White balance: Adjust color temperature',
+			options: [
+				{
+					type: 'dropdown',
+					label: 'Direction',
+					id: 'direction',
+					choices: DIRECTION_CHOICES,
+				},
+			],
+			callback: async (event) => {
+				const dir = event.options.direction === 'up' ? '\x02' : '\x03'
+				const cmd = '\x81\x01\x04\x20' + dir + 'FF'
+				instance.sendVISCACommand(cmd)
+			},
+		},
+		wbColorTempSet: {
+			name: 'White balance: Set color temperature',
+			options: [
+				{
+					type: 'dropdown',
+					label: 'Temperature',
+					id: 'temperature',
+					choices: COLOR_TEMP_CHOICES,
+				},
+			],
+			callback: async (event) => {
+				const temp = event.options.temperature
+				const cmd = '\x81\x01\x04\x20' + String.fromCharCode((temp >> 4) & 0xf, temp & 0xf) + 'FF'
 				instance.sendVISCACommand(cmd)
 			},
 		},

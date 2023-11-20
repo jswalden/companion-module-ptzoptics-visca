@@ -758,6 +758,110 @@ export function getPresets() {
 		feedbacks: [],
 	}
 
+	presets['color_temperature_white_balance_preset'] = {
+		type: 'button',
+		category: 'White balance',
+		name: 'Color Temperature White Balance',
+		style: {
+			text: 'WB\\nCOLOR\\nTEMP',
+			size: '14',
+			color: '16777215',
+			bgcolor: combineRgb(0, 0, 0),
+		},
+		steps: [
+			{
+				down: [
+					{
+						actionId: 'wb',
+						options: {
+							val: 'temperature',
+						},
+					},
+				],
+				up: [],
+			},
+		],
+		feedbacks: [],
+	}
+
+	presets['color_temperature_up_white_balance_preset'] = {
+		type: 'button',
+		category: 'White balance',
+		name: 'Color Temperature Up',
+		style: {
+			text: 'COLOR\\nTEMP\\nUP',
+			size: '18',
+			color: '16777215',
+			bgcolor: combineRgb(0, 0, 0),
+		},
+		steps: [
+			{
+				down: [
+					{
+						actionId: 'wbColorTempAdjust',
+						options: {
+							direction: 'up',
+						},
+					},
+				],
+				up: [],
+			},
+		],
+		feedbacks: [],
+	}
+
+	presets['color_temperature_down_white_balance_preset'] = {
+		type: 'button',
+		category: 'White balance',
+		name: 'Color Temperature Down',
+		style: {
+			text: 'COLOR\\nTEMP\\nDOWN',
+			size: '18',
+			color: '16777215',
+			bgcolor: combineRgb(0, 0, 0),
+		},
+		steps: [
+			{
+				down: [
+					{
+						actionId: 'wbColorTempAdjust',
+						options: {
+							direction: 'down',
+						},
+					},
+				],
+				up: [],
+			},
+		],
+		feedbacks: [],
+	}
+
+	presets['color_temperature_down_white_balance_preset'] = {
+		type: 'button',
+		category: 'White balance',
+		name: 'Color Temperature Down',
+		style: {
+			text: 'COLOR\\nTEMP\\nRESET',
+			size: '18',
+			color: '16777215',
+			bgcolor: combineRgb(0, 0, 0),
+		},
+		steps: [
+			{
+				down: [
+					{
+						actionId: 'wbColorTempSet',
+						options: {
+							temperature: 0x28,
+						},
+					},
+				],
+				up: [],
+			},
+		],
+		feedbacks: [],
+	}
+
 	// generates presets for saving camera presets
 	for (var save = 0; save < 255; save++) {
 		if (save < 90 || save > 99) {
