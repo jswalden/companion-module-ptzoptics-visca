@@ -95,9 +95,16 @@ export type ResponseParam = {
  * id, while each value identifies the nibbles that store the parameter and
  * provides a function to convert numeric parameter value to option value.
  */
-export type ResponseParams = {
+export type PartialResponseParams = {
 	[key: string]: ResponseParam
 }
+
+/**
+ * A hash of all parameters in a single return message.  Each key is an option
+ * id, while each value identifies the nibbles that store the parameter and
+ * provides a function to convert numeric parameter value to option value.
+ */
+export type ResponseParams = Readonly<PartialResponseParams>
 
 /**
  * A single return message found within the full response to a VISCA command,

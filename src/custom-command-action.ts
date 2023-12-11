@@ -1,12 +1,22 @@
 import type {
+	CompanionActionContext,
 	CompanionActionDefinition,
 	CompanionActionInfo,
+	CompanionInputFieldCustomVariable,
 	CompanionInputFieldTextInput,
 	CompanionOptionValues,
+	SomeCompanionActionInputField,
 } from '@companion-module/base'
 import { PtzOpticsActionId } from './actions-enum.js'
 import type { PtzOpticsInstance } from './instance.js'
-import { UserDefinedCommand, type CommandParams, type PartialCommandParams, type Response } from './visca/command.js'
+import {
+	UserDefinedCommand,
+	type CommandParams,
+	type PartialCommandParams,
+	type Response,
+	type PartialResponseParams,
+} from './visca/command.js'
+import { prettyBytes } from './visca/utils.js'
 
 /** Parse a VISCA message string into an array of byte values. */
 function parseMessage(msg: string): readonly number[] {
@@ -72,6 +82,58 @@ function addCommandParameterDefaults(options: CompanionOptionValues): void {
 	}
 }
 
+/**
+ * The isVisible callback for inputs that correspond to parameters in the
+ * response messages to the command.
+ */
+function responseParameterVariablePickerIsVisible(
+	options: CompanionOptionValues,
+	[i, parameters_option]: [number, string]
+): boolean {
+	const responseParams = options[parameters_option]
+	if (typeof responseParams !== 'string' || responseParams === '') {
+		return false
+	}
+
+	// This must be a local, uninherited, duplicated constant because
+	// isVisible functions are converted to and from string.
+	const PARAMETERS_SPLITTER = /; ?/g
+
+	const responseParamCount = responseParams.split(PARAMETERS_SPLITTER).length
+	return i < responseParamCount
+}
+
+// Block Color & Exposure Inquiry's response has an unfathomable 10 parameters.
+// 90 50 0p 0p 0q 0q 0r 0s tt 0u vv ww 00 xx 0z FF
+const MAX_PARAMETERS_IN_RESPONSE_MESSAGE = 10
+
+/**
+ * Generate text inputs corresponding to values to set in parameters of the
+ * command.
+ * @param response
+ *    The number of the response being targeted, e.g. in the standard response
+ *    of ACK + Completion this is either 0 or 1.
+ * @param parameters_option
+ *    The option-id that specifies the particular response's parameters string.
+ * @returns {CompanionInputFieldCustomVariable[]}
+ */
+function generateCustomVariablePickersForResponseParameters(
+	response: number,
+	parameters_option: string
+): CompanionInputFieldCustomVariable[] {
+	const pickers: CompanionInputFieldCustomVariable[] = []
+	for (let i = 0; i < MAX_PARAMETERS_IN_RESPONSE_MESSAGE; i++) {
+		pickers.push({
+			type: 'custom-variable',
+			id: `response${response}_parameter${i}`,
+			label: `Response ${response} parameter ${i + 1}`,
+			isVisibleData: [i, parameters_option],
+			isVisible: responseParameterVariablePickerIsVisible,
+		})
+	}
+	return pickers
+}
+
 // The standard reply to an inquiry is one message containing one or more
 // parameters, so this must be at least 1.
 //
@@ -96,7 +158,7 @@ const NIBBLES_SPLITTER = /, ?/g
  *    of nibble offsets, all nibble offsets being unique and referring to
  *    nibbles in `command` that are zero.
  */
-function parseParameters(command: readonly number[], parametersString: string): readonly number[][] {
+function parseParameterString(command: readonly number[], parametersString: string): readonly (readonly number[])[] {
 	if (parametersString === '') return []
 
 	const params = parametersString.split(PARAMETERS_SPLITTER)
@@ -111,7 +173,7 @@ function parseParameters(command: readonly number[], parametersString: string): 
 	for (const nibbles of parameters) {
 		for (const nibble of nibbles) {
 			if (nibble < 2 || 2 * command.length - 2 <= nibble) {
-				throw new RangeError(`offset ${nibble} is out of range`)
+				throw new RangeError(`offset ${nibble} is out of range` + '\n' + new Error().stack)
 			}
 			if (seen.has(nibble)) {
 				throw new RangeError(`offset ${nibble} appears multiple times in parameters`)
@@ -130,30 +192,98 @@ function parseParameters(command: readonly number[], parametersString: string): 
 	return parameters
 }
 
+/** Parse a string defining the bytes of a VISCA command/inquiry. */
+function parseCommand(options: CompanionOptionValues): [readonly number[], CommandParams] {
+	const commandBytes = parseMessage(String(options['custom']))
+
+	const commandParams: PartialCommandParams = {}
+	for (const [i, nibbles] of Object.entries(
+		parseParameterString(commandBytes, String(options['command_parameters']))
+	)) {
+		commandParams[`param_${i}`] = {
+			nibbles,
+			choiceToParam: Number,
+		}
+	}
+
+	return [commandBytes, commandParams]
+}
+
 /**
  * Parse response options info into response/parameters info to pass to
  * `UserDefinedCommand`.
  */
-// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types -- need to figure out how to sync up options object with response parameters
-function parseResponses(options: any /* CompanionOptionValues */): Response[] {
-	const responses = []
+function parseResponses(options: CompanionOptionValues): Response[] {
+	const responses: Response[] = []
 
 	const responseCount = Number(options['response_count'])
 	for (let i = 0; i < responseCount; i++) {
-		const valueBytes = parseMessage(options[`response${i}_bytes`])
-		const maskBytes = parseMessage(options[`response${i}_mask`])
+		const valueBytes = parseMessage(String(options[`response${i}_bytes`]))
+		const maskBytes = parseMessage(String(options[`response${i}_mask`]))
 		if (valueBytes.length !== maskBytes.length) {
 			throw new RangeError(`response #${i + 1} values and mask are different lengths`)
 		}
 
+		const paramList = parseParameterString(valueBytes, String(options[`response${i}_parameters`]))
+
+		const partialParams = paramList.reduce((params, nibbles, j) => {
+			params[`response${i}_param${j}`] = {
+				nibbles,
+				paramToChoice: String,
+			}
+			return params
+		}, {} as PartialResponseParams)
+
 		responses.push({
 			value: valueBytes,
 			mask: maskBytes,
-			params: {},
+			params: partialParams,
 		})
 	}
 
 	return responses
+}
+
+/**
+ * Make an options object to pass to `PtzOpticsInstance.sendCommand` to fill
+ * parameter values in the user-defined command.
+ */
+async function makeCommandOptions(
+	options: CompanionOptionValues,
+	context: CompanionActionContext,
+	commandParams: CommandParams
+) {
+	const commandOpts: CompanionOptionValues = {}
+	for (const key of Object.keys(commandParams)) {
+		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+		const i = key.match(/^param_(\d+)$/)![1]
+		const val = await context.parseVariablesInString(String(options[`parameter${i}`]))
+		commandOpts[key] = Number(val)
+	}
+
+	return commandOpts
+}
+
+function processCommandResponseAndSetVariables(
+	instance: PtzOpticsInstance,
+	responseMessages: Response[],
+	options: CompanionOptionValues,
+	responseOptions: CompanionOptionValues
+) {
+	for (let i = 0; i < responseMessages.length; i++) {
+		const response = responseMessages[i]
+		const responseParams = response.params
+		for (const id of Object.keys(responseParams)) {
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			const j = id.match(/^response(?:\d+)_param(\d+)$/)![1]
+
+			const customVarName = String(options[`response${i}_parameter${j}`])
+			const newVal = Number(responseOptions[`response${i}_param${j}`])
+
+			instance.log('info', `Setting $(${customVarName}) to ${newVal}...`)
+			instance.setCustomVariableValue(customVarName, newVal)
+		}
+	}
 }
 
 const STANDARD_RESPONSE = [
@@ -215,6 +345,33 @@ export function addCommandParametersAndResponseToCustomCommandOptions(options: C
 	addResponseDefaults(options)
 }
 
+const CommandResponse0ParametersOptionId = 'response0_parameters'
+const NO_PARAMETERS = ''
+
+export function isCustomCommandWithResponsesMissingParameters(action: CompanionActionInfo): boolean {
+	return (
+		action.actionId === PtzOpticsActionId.SendCustomCommand && !(CommandResponse0ParametersOptionId in action.options)
+	)
+}
+
+/**
+ * At one time, "Custom command" responses consisted only of byte values and a
+ * mask to match them with.
+ *
+ * Now, the "Custom command" action supports user-defined parameters in all
+ * response messages.
+ *
+ * Add "no parameters" options to all responses in "Custom command" action
+ * `options` that lack them.
+ */
+export function addResponseParametersToCustomCommandOptions(options: CompanionOptionValues): void {
+	for (let i = 0; i < MAX_MESSAGES_IN_RESPONSE; i++) {
+		options[`response${i}_parameters`] = NO_PARAMETERS
+		// No need to add any options for the individual parameters while this
+		// option indicates no parameters are present in this response.
+	}
+}
+
 /**
  * Generate an action definition for the "Custom command" action.
  */
@@ -267,11 +424,11 @@ export function generateCustomCommandAction(instance: PtzOpticsInstance): Compan
 				// (2 to 15) + 1
 				const RESPONSE_MASK_REGEX = '/(?:[0-9a-fA-F]{2} ?){2,15}[fF][fF]$/'
 
-				const allResponseFields: CompanionInputFieldTextInput[] = []
+				const allResponseFields: SomeCompanionActionInputField[] = []
 				for (let i = 0; i < MAX_MESSAGES_IN_RESPONSE; i++) {
 					const isVisible = (options: CompanionOptionValues, i: number) => i < Number(options['response_count'])
 
-					const responseFields: CompanionInputFieldTextInput[] = [
+					const responseFields: SomeCompanionActionInputField[] = [
 						{
 							type: 'textinput',
 							label: `Bytes of expected response #${i + 1} (set half-bytes in any parameters to zeroes)`,
@@ -290,6 +447,18 @@ export function generateCustomCommandAction(instance: PtzOpticsInstance): Compan
 							isVisibleData: i,
 							isVisible,
 						},
+						{
+							type: 'textinput',
+							label: `Parameter locations in response #${i + 1}`,
+							id: `response${i}_parameters`,
+							regex: PARAMETER_LIST_REGEX,
+							default: NO_PARAMETERS,
+							tooltip:
+								'The parameter list must be separated by semicolons.  Each parameter should be a comma-separated sequence of half-byte offsets into the response.  Offsets must not be reused.',
+							isVisibleData: i,
+							isVisible,
+						},
+						...generateCustomVariablePickersForResponseParameters(i, `response${i}_parameters`),
 					]
 
 					allResponseFields.push(...responseFields)
@@ -299,37 +468,28 @@ export function generateCustomCommandAction(instance: PtzOpticsInstance): Compan
 			})(),
 		],
 		callback: async ({ options }, context) => {
-			const commandBytes = parseMessage(String(options['custom']))
+			// Process all options to create the user-defined command.
+			const [commandBytes, commandParams] = parseCommand(options)
+			const responseMessages = parseResponses(options)
 
-			const commandParams: CommandParams = parseParameters(commandBytes, String(options['command_parameters'])).reduce(
-				(acc, nibbles, i) => {
-					acc[`param_${i}`] = {
-						nibbles,
-						choiceToParam: Number,
-					}
-
-					return acc
-				},
-				{} as PartialCommandParams
-			)
-
-			const responseMessages: Response[] = parseResponses(options).map(({ value, mask }) => {
-				return {
-					value,
-					mask,
-					params: {},
-				}
-			})
-
+			// Create the user-defined command.
 			const command = new UserDefinedCommand(commandBytes, commandParams, responseMessages)
 
-			const commandOpts: { [key: string]: number | undefined } = {}
-			for (const key of Object.keys(commandParams)) {
-				const val = await context.parseVariablesInString(String(options[`parameter${key}`]))
-				commandOpts[`param_${key}`] = Number(val)
+			// Make the options to use to fill its parameters
+			const commandOpts = await makeCommandOptions(options, context, commandParams)
+
+			const responseOptions = await instance.sendCommand(command, commandOpts)
+			if (responseOptions === null) {
+				instance.log(
+					'error',
+					`error executing command whose bytes (pre-parameter interpolation) are ${prettyBytes(commandBytes)}`
+				)
+				return
 			}
 
-			void instance.sendCommand(command, commandOpts)
+			// Extract all numeric parameters in the response messages and set
+			// the specified custom variables.
+			processCommandResponseAndSetVariables(instance, responseMessages, options, responseOptions)
 		},
 	}
 }
