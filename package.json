@@ -11,7 +11,8 @@
 		"build:main": "tsc -p tsconfig.build.json",
 		"dev": "tsc -p tsconfig.build.json --watch",
 		"lint:raw": "eslint",
-		"lint": "yarn lint:raw ."
+		"lint": "yarn lint:raw .",
+		"check-exports": "yarn ts-prune --project tsconfig.json --error"
 	},
 	"license": "MIT",
 	"repository": {
@@ -46,6 +47,7 @@
 		"rimraf": "^6.0.1",
 		"ts-jest": "^29.2.5",
 		"ts-node": "^10.9.2",
+		"ts-prune": "^0.10.3",
 		"typescript": "~5.7.3",
 		"typescript-eslint": "~8.23.0"
 	},
